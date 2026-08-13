@@ -61,6 +61,12 @@ async function register(req, res) {
       return res.status(400).json({ message: 'Workspace name is required' });
     }
 
+    if (workspaceName.length < 3 || workspaceName.length > 100) {
+      return res.status(400).json({
+        message: 'Workspace name must be between 3 and 100 characters',
+      });
+    }
+
     if (!password || password.length < MIN_PASSWORD_LEN) {
       return res.status(400).json({
         message: `Password must be at least ${MIN_PASSWORD_LEN} characters`,
@@ -90,10 +96,19 @@ async function register(req, res) {
 
     const user = userResult.rows[0];
 
+    const workspaceResult = await client.query(
+      `INSERT INTO workspaces (name, created_by)
+       VALUES ($1, $2)
+       RETURNING id, name, created_at`,
+      [workspaceName, user.id]
+    );
+
+    const workspace = workspaceResult.rows[0];
+
     await client.query(
-      `INSERT INTO workspaces (workspace_name, owner_id)
-       VALUES ($1, $2)`,
-      [user.workspace_name, user.id]
+      `INSERT INTO workspace_members (workspace_id, user_id, role)
+       VALUES ($1, $2, 'Owner')`,
+      [workspace.id, user.id]
     );
 
     await client.query('COMMIT');

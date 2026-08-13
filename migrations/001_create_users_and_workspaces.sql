@@ -24,4 +24,12 @@ CREATE TABLE IF NOT EXISTS workspaces (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_workspaces_owner_id ON workspaces (owner_id);
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'workspaces' AND column_name = 'owner_id'
+  ) THEN
+    CREATE INDEX IF NOT EXISTS idx_workspaces_owner_id ON workspaces (owner_id);
+  END IF;
+END $$;

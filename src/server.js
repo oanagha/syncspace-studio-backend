@@ -7,6 +7,7 @@ require('./config/db');
 const { logEnvStatus, getFrontendUrl, isProduction } = require('./config/env');
 
 const authRoutes = require('./routes/auth.routes');
+const workspaceRoutes = require('./routes/workspace.routes');
 
 const app = express();
 
@@ -35,6 +36,7 @@ app.get('/', (req, res) => {
 });
 
 app.use('/api/auth', authRoutes);
+app.use('/api/workspaces', workspaceRoutes);
 
 const PORT = process.env.PORT || 5000;
 
