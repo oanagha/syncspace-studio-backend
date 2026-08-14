@@ -28,10 +28,12 @@ async function getWorkspaceMembership(workspaceId, userId) {
 async function requireWorkspaceMember(req, res, next) {
   try {
     const raw =
-      req.params.workspaceId ||
-      req.params.id ||
+      req.body?.workspaceId ||
+      req.query?.workspaceId ||
       req.body?.workspace_id ||
-      req.query?.workspace_id;
+      req.query?.workspace_id ||
+      req.params.workspaceId ||
+      req.params.id;
 
     const workspaceId = parseWorkspaceId(raw);
 
