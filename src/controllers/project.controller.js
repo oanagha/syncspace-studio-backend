@@ -3,6 +3,7 @@ const {
   parseWorkspaceId,
   getWorkspaceMembership,
 } = require('../middleware/workspace.middleware');
+const { ensureDefaultColumns } = require('./column.controller');
 
 const MIN_TITLE_LEN = 3;
 const MAX_TITLE_LEN = 150;
@@ -207,6 +208,8 @@ async function createProject(req, res) {
        ON CONFLICT (project_id, user_id) DO NOTHING`,
       [project.id, req.user.id]
     );
+
+    await ensureDefaultColumns(client, project.id);
 
     await client.query('COMMIT');
 

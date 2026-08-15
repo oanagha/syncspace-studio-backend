@@ -1,7 +1,6 @@
 require('dotenv').config();
 
 const express = require('express');
-const cors = require('cors');
 
 require('./config/db');
 const { logEnvStatus, getFrontendUrl, isProduction } = require('./config/env');
@@ -10,27 +9,43 @@ const authRoutes = require('./routes/auth.routes');
 const workspaceRoutes = require('./routes/workspace.routes');
 const projectRoutes = require('./routes/project.routes');
 const taskRoutes = require('./routes/task.routes');
+const notificationRoutes = require('./routes/notification.routes');
+const teamRoutes = require('./routes/team.routes');
+const settingsRoutes = require('./routes/settings.routes');
+const columnRoutes = require('./routes/column.routes');
+const boardRoutes = require('./routes/board.routes');
 
 const app = express();
 
-const allowedOrigins = [getFrontendUrl()].filter(Boolean);
+const allowedOrigins = [
+  getFrontendUrl(),
+  'http://localhost:8080',
+  'http://127.0.0.1:8080',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+].filter(Boolean);
 
-app.use(
-  cors(
-    isProduction()
-      ? {
-          origin(origin, callback) {
-            if (!origin || allowedOrigins.includes(origin)) {
-              callback(null, true);
-              return;
-            }
-            callback(new Error('Not allowed by CORS'));
-          },
-          credentials: true,
-        }
-      : undefined
-  )
-);
+const ALLOWED_METHODS = 'GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS';
+const ALLOWED_HEADERS = 'Content-Type, Authorization, Accept';
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && (allowedOrigins.includes(origin) || !isProduction())) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Vary', 'Origin');
+  }
+
+  res.setHeader('Access-Control-Allow-Methods', ALLOWED_METHODS);
+  res.setHeader('Access-Control-Allow-Headers', ALLOWED_HEADERS);
+  res.setHeader('Access-Control-Max-Age', '0');
+
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+
+  return next();
+});
 app.use(express.json());
 
 app.get('/', (req, res) => {
@@ -41,6 +56,11 @@ app.use('/api/auth', authRoutes);
 app.use('/api/workspaces', workspaceRoutes);
 app.use('/api/projects', projectRoutes);
 app.use('/api/tasks', taskRoutes);
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/team', teamRoutes);
+app.use('/api/settings', settingsRoutes);
+app.use('/api/columns', columnRoutes);
+app.use('/api/boards', boardRoutes);
 
 const PORT = process.env.PORT || 5000;
 
