@@ -3,6 +3,8 @@ const {
   parseWorkspaceId,
   getWorkspaceMembership,
 } = require('../middleware/workspace.middleware');
+const { sendWorkspaceInviteEmail } = require('../utils/mail');
+const { getFrontendUrl } = require('../config/env');
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const INVITE_ROLES = new Set(['Admin', 'Member']);
@@ -174,8 +176,42 @@ async function inviteMember(req, res) {
       [workspaceId, email, role, req.user.id]
     );
 
+    const invitation = result.rows[0];
+    const inviter = await pool.query(
+      `SELECT full_name, workspace_email FROM users WHERE id = $1`,
+      [req.user.id]
+    );
+    const inviterRow = inviter.rows[0];
+    const invitedByName =
+      inviterRow?.full_name || inviterRow?.workspace_email || 'A teammate';
+    const acceptUrl = `${getFrontendUrl().replace(/\/$/, '')}/invite/${invitation.id}`;
+
+    try {
+      await sendWorkspaceInviteEmail({
+        to: email,
+        workspaceName: membership.name,
+        role,
+        invitedByName,
+        acceptUrl,
+      });
+    } catch (mailErr) {
+      // Keep the invite row — email failure should not wipe the invitation.
+      console.error('Invite created but email failed:', mailErr.message);
+      return res.status(201).json({
+        invitation: serializeInvitation({
+          ...invitation,
+          workspace_name: membership.name,
+        }),
+        warning: 'Invitation saved, but the email could not be sent. Check email configuration.',
+      });
+    }
+
     return res.status(201).json({
-      invitation: serializeInvitation(result.rows[0]),
+      invitation: serializeInvitation({
+        ...invitation,
+        workspace_name: membership.name,
+      }),
+      message: 'Invitation sent',
     });
   } catch (err) {
     if (err.code === '23505') {

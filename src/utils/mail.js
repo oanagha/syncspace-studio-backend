@@ -178,8 +178,104 @@ async function sendContactEmail(payload) {
   }
 }
 
+function logInvite({ to, workspaceName, role }) {
+  console.log('\n--- Workspace invitation ---');
+  console.log(`To: ${to}`);
+  console.log(`Workspace: ${workspaceName}`);
+  console.log(`Role: ${role}`);
+  console.log('----------------------------\n');
+}
+
+function buildInviteEmail({
+  to,
+  workspaceName,
+  role,
+  invitedByName,
+  acceptUrl,
+}) {
+  const fromEmail = process.env.EMAIL_FROM;
+  const appName = process.env.APP_NAME || 'SyncSpace';
+  const safeWorkspace = escapeHtml(workspaceName);
+  const safeRole = escapeHtml(role);
+  const safeInviter = escapeHtml(invitedByName || 'A teammate');
+  const safeUrl = escapeHtml(acceptUrl);
+
+  return {
+    to,
+    from: {
+      email: fromEmail,
+      name: appName,
+    },
+    replyTo: fromEmail,
+    subject: `You're invited to join ${workspaceName} on ${appName}`,
+    text: [
+      `${invitedByName || 'A teammate'} invited you to join “${workspaceName}” on ${appName} as ${role}.`,
+      '',
+      `Open this link to accept the invitation (same browser tab):`,
+      acceptUrl,
+      '',
+      'Sign in with the invited email if asked, then tap Accept invitation.',
+      '',
+      'If you were not expecting this invitation, you can ignore this email.',
+    ].join('\n'),
+    html: `
+      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #111827; max-width: 560px; margin: 0 auto; padding: 24px;">
+        <h2 style="margin: 0 0 16px;">You're invited to ${safeWorkspace}</h2>
+        <p><strong>${safeInviter}</strong> invited you to join <strong>${safeWorkspace}</strong> as <strong>${safeRole}</strong>.</p>
+        <p style="margin: 24px 0;">
+          <a href="${safeUrl}" style="display:inline-block;background:#1A4A6E;color:#fff;text-decoration:none;padding:12px 18px;border-radius:10px;font-weight:600;">
+            Accept invitation
+          </a>
+        </p>
+        <p style="font-size: 14px; color: #6b7280;">
+          Opens in this browser. Sign in with <strong>${escapeHtml(to)}</strong> if needed, then accept — you’ll be added as a member right away.
+        </p>
+        <p style="font-size: 13px; color: #9ca3af; word-break: break-all;">${safeUrl}</p>
+      </div>
+    `,
+    trackingSettings: {
+      clickTracking: { enable: false },
+      openTracking: { enable: false },
+    },
+  };
+}
+
+/**
+ * Send a workspace invite email. When SendGrid is missing, logs and resolves
+ * so local invites still succeed.
+ */
+async function sendWorkspaceInviteEmail(payload) {
+  logInvite(payload);
+
+  if (!isSendGridConfigured()) {
+    console.warn(
+      'SendGrid is not configured — invitation logged only (set SENDGRID_API_KEY and EMAIL_FROM to email).'
+    );
+    return { delivered: false, logged: true };
+  }
+
+  sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+
+  try {
+    const [response] = await sgMail.send(buildInviteEmail(payload));
+    const messageId = response?.headers?.['x-message-id'];
+    console.log(
+      `Workspace invite emailed to ${payload.to}${messageId ? ` (id: ${messageId})` : ''}`
+    );
+    return { delivered: true, logged: true };
+  } catch (err) {
+    const details = err.response?.body?.errors?.[0]?.message || err.message;
+    console.error('SendGrid invite error:', details);
+    if (err.response?.body) {
+      console.error('SendGrid details:', JSON.stringify(err.response.body, null, 2));
+    }
+    throw new Error('Failed to send invitation email');
+  }
+}
+
 module.exports = {
   sendPasswordResetOtpEmail,
   sendContactEmail,
+  sendWorkspaceInviteEmail,
   isSendGridConfigured,
 };
