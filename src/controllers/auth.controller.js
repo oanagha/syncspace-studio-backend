@@ -1,14 +1,19 @@
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const pool = require('../config/db');
 const { signToken, verifyToken } = require('../utils/jwt');
 const { generateOtp, hashOtp } = require('../utils/otp');
-const { sendPasswordResetOtpEmail } = require('../utils/mail');
+const { sendPasswordResetOtpEmail, sendLoginAlertEmail } = require('../utils/mail');
+const { generateSecret, verifyTotp, buildOtpAuthUrl } = require('../utils/totp');
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MIN_PASSWORD_LEN = 6;
 const OTP_EXPIRY_MINUTES = 10;
 const OTP_MAX_ATTEMPTS = 5;
 const RESET_TOKEN_EXPIRY = '15m';
+const TWO_FA_CHALLENGE_EXPIRY = '5m';
+const APP_ISSUER = process.env.APP_NAME || 'SyncSpace';
+
 function pickField(body, ...keys) {
   for (const key of keys) {
     if (body[key] !== undefined && body[key] !== null) {
@@ -16,6 +21,86 @@ function pickField(body, ...keys) {
     }
   }
   return undefined;
+}
+
+function clientIp(req) {
+  if (process.env.TRUST_PROXY === '1' || process.env.TRUST_PROXY === 'true') {
+    const forwarded = req.headers['x-forwarded-for'];
+    if (typeof forwarded === 'string' && forwarded.trim()) {
+      return forwarded.split(',')[0].trim();
+    }
+  }
+  return req.ip || req.socket?.remoteAddress || 'unknown';
+}
+
+function loginFingerprint(ip, userAgent) {
+  return crypto
+    .createHash('sha256')
+    .update(`${ip || ''}|${userAgent || ''}`)
+    .digest('hex');
+}
+
+function publicUser(user) {
+  return {
+    id: user.id,
+    name: user.full_name,
+    email: user.workspace_email,
+  };
+}
+
+async function syncTwoFactorPreference(userId, enabled, client = pool) {
+  await client.query(
+    `INSERT INTO user_preferences (user_id, two_factor)
+     VALUES ($1, $2)
+     ON CONFLICT (user_id) DO UPDATE SET two_factor = EXCLUDED.two_factor`,
+    [userId, Boolean(enabled)]
+  );
+}
+
+async function maybeSendLoginAlert(req, user) {
+  const ip = clientIp(req);
+  const userAgent = String(req.headers['user-agent'] || '').slice(0, 500);
+  const fingerprint = loginFingerprint(ip, userAgent);
+
+  const prefResult = await pool.query(
+    `SELECT login_alerts FROM user_preferences WHERE user_id = $1`,
+    [user.id]
+  );
+  const loginAlerts =
+    prefResult.rows.length === 0
+      ? true
+      : prefResult.rows[0].login_alerts !== false;
+
+  const previous = user.last_login_fingerprint || null;
+  const isNewDevice = !previous || previous !== fingerprint;
+
+  await pool.query(
+    `UPDATE users
+     SET last_login_fingerprint = $2,
+         last_login_at = NOW(),
+         last_login_ip = $3,
+         last_login_user_agent = $4,
+         updated_at = NOW()
+     WHERE id = $1`,
+    [user.id, fingerprint, String(ip).slice(0, 64), userAgent || null]
+  );
+
+  if (loginAlerts && isNewDevice) {
+    await sendLoginAlertEmail({
+      to: user.workspace_email,
+      name: user.full_name,
+      ip,
+      userAgent: userAgent || 'Unknown device',
+      when: new Date().toUTCString(),
+    });
+  }
+}
+
+function issueSessionToken(user) {
+  return signToken({
+    sub: user.id,
+    email: user.workspace_email,
+  });
 }
 
 async function register(req, res) {
@@ -157,7 +242,8 @@ async function login(req, res) {
     }
 
     const result = await pool.query(
-      `SELECT id, full_name, workspace_email, password_hash
+      `SELECT id, full_name, workspace_email, password_hash, totp_enabled,
+              totp_secret, last_login_fingerprint
        FROM users
        WHERE workspace_email = $1`,
       [email.toLowerCase()]
@@ -174,22 +260,246 @@ async function login(req, res) {
       return res.status(401).json({ message: 'Invalid email or password' });
     }
 
-    const token = signToken({
-      sub: user.id,
-      email: user.workspace_email,
-    });
+    if (user.totp_enabled && user.totp_secret) {
+      const challengeToken = signToken(
+        {
+          sub: user.id,
+          email: user.workspace_email,
+          purpose: '2fa_pending',
+        },
+        TWO_FA_CHALLENGE_EXPIRY
+      );
+
+      return res.status(200).json({
+        requires2fa: true,
+        challengeToken,
+        message: 'Enter the 6-digit code from your authenticator app.',
+      });
+    }
+
+    const token = issueSessionToken(user);
+    await maybeSendLoginAlert(req, user);
 
     return res.status(200).json({
       token,
-      user: {
-        id: user.id,
-        name: user.full_name,
-        email: user.workspace_email,
-      },
+      user: publicUser(user),
     });
   } catch (err) {
     console.error('Login error:', err);
     return res.status(500).json({ message: 'Login failed' });
+  }
+}
+
+async function verify2fa(req, res) {
+  try {
+    const challengeToken = String(
+      pickField(req.body, 'challengeToken', 'challenge_token') ?? ''
+    ).trim();
+    const code = String(pickField(req.body, 'code', 'otp', 'token') ?? '').trim();
+
+    if (!challengeToken) {
+      return res.status(400).json({ message: 'Challenge token is required' });
+    }
+    if (!/^\d{6}$/.test(code)) {
+      return res.status(400).json({ message: 'Enter a valid 6-digit code' });
+    }
+
+    let payload;
+    try {
+      payload = verifyToken(challengeToken);
+    } catch {
+      return res.status(401).json({ message: 'Challenge expired. Sign in again.' });
+    }
+
+    if (payload.purpose !== '2fa_pending' || !payload.sub) {
+      return res.status(401).json({ message: 'Invalid challenge token' });
+    }
+
+    const result = await pool.query(
+      `SELECT id, full_name, workspace_email, totp_enabled, totp_secret,
+              last_login_fingerprint
+       FROM users
+       WHERE id = $1`,
+      [Number(payload.sub)]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(401).json({ message: 'Invalid challenge token' });
+    }
+
+    const user = result.rows[0];
+    if (!user.totp_enabled || !user.totp_secret) {
+      return res.status(400).json({ message: 'Two-factor authentication is not enabled' });
+    }
+
+    if (!verifyTotp(user.totp_secret, code)) {
+      return res.status(401).json({ message: 'Invalid authentication code' });
+    }
+
+    const token = issueSessionToken(user);
+    await maybeSendLoginAlert(req, user);
+
+    return res.status(200).json({
+      token,
+      user: publicUser(user),
+    });
+  } catch (err) {
+    console.error('Verify 2FA error:', err);
+    return res.status(500).json({ message: 'Two-factor verification failed' });
+  }
+}
+
+async function get2faStatus(req, res) {
+  try {
+    const result = await pool.query(
+      `SELECT totp_enabled FROM users WHERE id = $1`,
+      [req.user.id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+    return res.status(200).json({
+      enabled: Boolean(result.rows[0].totp_enabled),
+    });
+  } catch (err) {
+    console.error('2FA status error:', err);
+    return res.status(500).json({ message: 'Failed to load 2FA status' });
+  }
+}
+
+async function setup2fa(req, res) {
+  try {
+    const userResult = await pool.query(
+      `SELECT id, workspace_email, totp_enabled FROM users WHERE id = $1`,
+      [req.user.id]
+    );
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const user = userResult.rows[0];
+    if (user.totp_enabled) {
+      return res.status(400).json({ message: 'Two-factor authentication is already enabled' });
+    }
+
+    const secret = generateSecret();
+    await pool.query(
+      `UPDATE users SET totp_pending_secret = $2, updated_at = NOW() WHERE id = $1`,
+      [user.id, secret]
+    );
+
+    const otpauthUrl = buildOtpAuthUrl({
+      secret,
+      email: user.workspace_email,
+      issuer: APP_ISSUER,
+    });
+
+    return res.status(200).json({
+      secret,
+      otpauthUrl,
+      qrUrl: `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(otpauthUrl)}`,
+    });
+  } catch (err) {
+    console.error('2FA setup error:', err);
+    return res.status(500).json({ message: 'Failed to start 2FA setup' });
+  }
+}
+
+async function enable2fa(req, res) {
+  try {
+    const code = String(pickField(req.body, 'code', 'otp', 'token') ?? '').trim();
+    if (!/^\d{6}$/.test(code)) {
+      return res.status(400).json({ message: 'Enter a valid 6-digit code' });
+    }
+
+    const result = await pool.query(
+      `SELECT id, totp_enabled, totp_pending_secret FROM users WHERE id = $1`,
+      [req.user.id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const user = result.rows[0];
+    if (user.totp_enabled) {
+      return res.status(400).json({ message: 'Two-factor authentication is already enabled' });
+    }
+    if (!user.totp_pending_secret) {
+      return res.status(400).json({ message: 'Start 2FA setup before confirming the code' });
+    }
+
+    if (!verifyTotp(user.totp_pending_secret, code)) {
+      return res.status(401).json({ message: 'Invalid authentication code' });
+    }
+
+    await pool.query(
+      `UPDATE users
+       SET totp_secret = totp_pending_secret,
+           totp_pending_secret = NULL,
+           totp_enabled = TRUE,
+           updated_at = NOW()
+       WHERE id = $1`,
+      [user.id]
+    );
+    await syncTwoFactorPreference(user.id, true);
+
+    return res.status(200).json({
+      enabled: true,
+      message: 'Two-factor authentication enabled',
+    });
+  } catch (err) {
+    console.error('2FA enable error:', err);
+    return res.status(500).json({ message: 'Failed to enable 2FA' });
+  }
+}
+
+async function disable2fa(req, res) {
+  try {
+    const password = pickField(req.body, 'password') ?? '';
+    const code = String(pickField(req.body, 'code', 'otp', 'token') ?? '').trim();
+
+    if (!password) {
+      return res.status(400).json({ message: 'Password is required to disable 2FA' });
+    }
+
+    const result = await pool.query(
+      `SELECT id, password_hash, totp_enabled, totp_secret FROM users WHERE id = $1`,
+      [req.user.id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const user = result.rows[0];
+    const passwordMatch = await bcrypt.compare(password, user.password_hash);
+    if (!passwordMatch) {
+      return res.status(401).json({ message: 'Incorrect password' });
+    }
+
+    if (user.totp_enabled && user.totp_secret) {
+      if (!/^\d{6}$/.test(code) || !verifyTotp(user.totp_secret, code)) {
+        return res.status(401).json({ message: 'Invalid authentication code' });
+      }
+    }
+
+    await pool.query(
+      `UPDATE users
+       SET totp_secret = NULL,
+           totp_pending_secret = NULL,
+           totp_enabled = FALSE,
+           updated_at = NOW()
+       WHERE id = $1`,
+      [user.id]
+    );
+    await syncTwoFactorPreference(user.id, false);
+
+    return res.status(200).json({
+      enabled: false,
+      message: 'Two-factor authentication disabled',
+    });
+  } catch (err) {
+    console.error('2FA disable error:', err);
+    return res.status(500).json({ message: 'Failed to disable 2FA' });
   }
 }
 
@@ -434,4 +744,15 @@ async function resetPassword(req, res) {
   }
 }
 
-module.exports = { register, login, forgotPassword, verifyOtp, resetPassword };
+module.exports = {
+  register,
+  login,
+  verify2fa,
+  get2faStatus,
+  setup2fa,
+  enable2fa,
+  disable2fa,
+  forgotPassword,
+  verifyOtp,
+  resetPassword,
+};

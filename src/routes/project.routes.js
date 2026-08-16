@@ -6,6 +6,7 @@ const {
   listProjects,
   getProject,
   updateProject,
+  deleteProject,
 } = require('../controllers/project.controller');
 const { listTasks, createTask } = require('../controllers/task.controller');
 
@@ -18,6 +19,7 @@ router.get('/', requireWorkspaceMember, listProjects);
 router.get('/:id/tasks', listTasks);
 router.post('/:id/tasks', createTask);
 router.put('/:id', updateProject);
+router.delete('/:id', deleteProject);
 router.get('/:id', getProject);
 
 module.exports = router;

@@ -12,6 +12,13 @@ function validateEnv() {
 
   if (!process.env.JWT_SECRET) {
     errors.push('JWT_SECRET is required');
+  } else if (String(process.env.JWT_SECRET).length < 32) {
+    const message = 'JWT_SECRET should be at least 32 characters';
+    if (isProduction()) {
+      errors.push(message);
+    } else {
+      warnings.push(message);
+    }
   }
 
   if (!process.env.FRONTEND_URL) {

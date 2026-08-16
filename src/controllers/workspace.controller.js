@@ -3,6 +3,7 @@ const {
   parseWorkspaceId,
   getWorkspaceMembership,
 } = require('../middleware/workspace.middleware');
+const { deleteWorkspaceUploadDir } = require('../services/storage.service');
 
 const MIN_NAME_LEN = 3;
 const MAX_NAME_LEN = 100;
@@ -110,19 +111,11 @@ async function getWorkspace(req, res) {
       return res.status(400).json({ message: 'Invalid workspace id' });
     }
 
-    const exists = await pool.query(
-      `SELECT id FROM workspaces WHERE id = $1`,
-      [workspaceId]
-    );
-
-    if (exists.rows.length === 0) {
-      return res.status(404).json({ message: 'Workspace not found' });
-    }
-
     const membership = await getWorkspaceMembership(workspaceId, req.user.id);
 
     if (!membership) {
-      return res.status(403).json({ message: 'You do not have access to this workspace' });
+      // Same status for missing and inaccessible to avoid workspace id oracle.
+      return res.status(404).json({ message: 'Workspace not found' });
     }
 
     return res.status(200).json({
@@ -136,7 +129,9 @@ async function getWorkspace(req, res) {
 
 async function switchWorkspace(req, res) {
   try {
-    const workspaceId = parseWorkspaceId(req.body?.workspace_id);
+    const workspaceId = parseWorkspaceId(
+      req.body?.workspace_id ?? req.body?.workspaceId
+    );
 
     if (!workspaceId) {
       return res.status(400).json({ message: 'workspace_id is required' });
@@ -163,6 +158,10 @@ async function switchWorkspace(req, res) {
 
 function canRenameWorkspace(role) {
   return role === 'Owner' || role === 'Admin';
+}
+
+function canDeleteWorkspace(role) {
+  return role === 'Owner';
 }
 
 async function renameWorkspace(req, res) {
@@ -220,10 +219,64 @@ async function renameWorkspace(req, res) {
   }
 }
 
+async function deleteWorkspace(req, res) {
+  try {
+    const workspaceId = parseWorkspaceId(req.params.id);
+
+    if (!workspaceId) {
+      return res.status(404).json({ message: 'Workspace not found' });
+    }
+
+    const exists = await pool.query(
+      `SELECT id, name FROM workspaces WHERE id = $1`,
+      [workspaceId]
+    );
+
+    if (exists.rows.length === 0) {
+      return res.status(404).json({ message: 'Workspace not found' });
+    }
+
+    const membership = await getWorkspaceMembership(workspaceId, req.user.id);
+
+    if (!membership || !canDeleteWorkspace(membership.role)) {
+      return res.status(403).json({
+        message: 'Only the workspace owner can delete this workspace',
+      });
+    }
+
+    const membershipCount = await pool.query(
+      `SELECT COUNT(*)::int AS count
+       FROM workspace_members
+       WHERE user_id = $1`,
+      [req.user.id]
+    );
+
+    if ((membershipCount.rows[0]?.count || 0) <= 1) {
+      return res.status(400).json({
+        message: 'You cannot delete your only workspace',
+      });
+    }
+
+    await pool.query(`DELETE FROM workspaces WHERE id = $1`, [workspaceId]);
+
+    try {
+      await deleteWorkspaceUploadDir(workspaceId);
+    } catch (storageErr) {
+      console.error('Workspace upload cleanup failed:', storageErr);
+    }
+
+    return res.status(200).json({ message: 'Workspace deleted' });
+  } catch (err) {
+    console.error('Delete workspace error:', err);
+    return res.status(500).json({ message: 'Failed to delete workspace' });
+  }
+}
+
 module.exports = {
   createWorkspace,
   listWorkspaces,
   getWorkspace,
   switchWorkspace,
   renameWorkspace,
+  deleteWorkspace,
 };
