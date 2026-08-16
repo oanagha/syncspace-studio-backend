@@ -407,9 +407,53 @@ async function updateProject(req, res) {
   }
 }
 
+async function deleteProject(req, res) {
+  try {
+    const projectId = parseWorkspaceId(req.params.id);
+
+    if (!projectId) {
+      return res.status(404).json({ message: 'Project not found' });
+    }
+
+    const existing = await pool.query(
+      `SELECT id, workspace_id, title
+       FROM projects
+       WHERE id = $1`,
+      [projectId]
+    );
+
+    if (existing.rows.length === 0) {
+      return res.status(404).json({ message: 'Project not found' });
+    }
+
+    const current = existing.rows[0];
+    const membership = await getWorkspaceMembership(current.workspace_id, req.user.id);
+
+    if (!membership) {
+      return res.status(403).json({
+        message: 'You do not have permission to delete this project',
+      });
+    }
+
+    if (!canManageProject(membership.role)) {
+      return res.status(403).json({
+        message: 'You do not have permission to delete this project',
+      });
+    }
+
+    await pool.query(`DELETE FROM projects WHERE id = $1`, [projectId]);
+
+    return res.status(200).json({ message: 'Project deleted' });
+  } catch (err) {
+    console.error('Delete project error:', err);
+    return res.status(500).json({ message: 'Failed to delete project' });
+  }
+}
+
 module.exports = {
   createProject,
   listProjects,
   getProject,
   updateProject,
+  deleteProject,
 };

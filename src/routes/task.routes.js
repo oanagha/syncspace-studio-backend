@@ -10,7 +10,7 @@ const {
   updateTaskStatus,
   deleteTask,
 } = require('../controllers/task.controller');
-const { listComments, createComment } = require('../controllers/comment.controller');
+const { listComments, createComment, updateComment, deleteComment } = require('../controllers/comment.controller');
 const {
   listSubtasks,
   createSubtask,
@@ -25,6 +25,8 @@ router.use(authMiddleware);
 router.post('/', createTask);
 router.get('/:id/comments', listComments);
 router.post('/:id/comments', createComment);
+router.patch('/:id/comments/:commentId', updateComment);
+router.delete('/:id/comments/:commentId', deleteComment);
 router.get('/:id/subtasks', listSubtasks);
 router.post('/:id/subtasks', createSubtask);
 router.patch('/:id/subtasks/:subtaskId', updateSubtask);

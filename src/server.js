@@ -3,7 +3,7 @@ require('dotenv').config();
 const express = require('express');
 
 require('./config/db');
-const { logEnvStatus, getFrontendUrl, isProduction } = require('./config/env');
+const { logEnvStatus, getFrontendUrl } = require('./config/env');
 
 const authRoutes = require('./routes/auth.routes');
 const workspaceRoutes = require('./routes/workspace.routes');
@@ -14,6 +14,10 @@ const teamRoutes = require('./routes/team.routes');
 const settingsRoutes = require('./routes/settings.routes');
 const columnRoutes = require('./routes/column.routes');
 const boardRoutes = require('./routes/board.routes');
+const analyticsRoutes = require('./routes/analytics.routes');
+const fileRoutes = require('./routes/file.routes');
+const contactRoutes = require('./routes/contact.routes');
+const { ensureUploadRoot, UPLOAD_ROOT } = require('./services/storage.service');
 
 const app = express();
 
@@ -30,7 +34,8 @@ const ALLOWED_HEADERS = 'Content-Type, Authorization, Accept';
 
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  if (origin && (allowedOrigins.includes(origin) || !isProduction())) {
+  // Always allowlist — never reflect arbitrary Origin (even in non-production).
+  if (origin && allowedOrigins.includes(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Credentials', 'true');
     res.setHeader('Vary', 'Origin');
@@ -47,6 +52,16 @@ app.use((req, res, next) => {
   return next();
 });
 app.use(express.json());
+ensureUploadRoot();
+// Only avatars are public (non-guessable paths under /uploads/avatars/{userId}/).
+// Workspace files must go through GET /api/files/:id/download (JWT + membership).
+app.use(
+  '/uploads/avatars',
+  express.static(require('path').join(UPLOAD_ROOT, 'avatars'), {
+    fallthrough: false,
+    index: false,
+  })
+);
 
 app.get('/', (req, res) => {
   res.send('SyncSpace API running 🚀');
@@ -61,6 +76,9 @@ app.use('/api/team', teamRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/columns', columnRoutes);
 app.use('/api/boards', boardRoutes);
+app.use('/api/analytics', analyticsRoutes);
+app.use('/api/files', fileRoutes);
+app.use('/api/contact', contactRoutes);
 
 const PORT = process.env.PORT || 5000;
 

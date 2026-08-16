@@ -85,4 +85,101 @@ async function sendPasswordResetOtpEmail({ to, otp }) {
   }
 }
 
-module.exports = { sendPasswordResetOtpEmail, isSendGridConfigured };
+function buildContactEmail({ name, email, subject, message }) {
+  const fromEmail = process.env.EMAIL_FROM;
+  const appName = process.env.APP_NAME || 'SyncSpace';
+  const inbox = process.env.CONTACT_TO || fromEmail;
+
+  return {
+    to: inbox,
+    from: {
+      email: fromEmail,
+      name: `${appName} Contact`,
+    },
+    replyTo: {
+      email,
+      name,
+    },
+    subject: `[${appName} Contact] ${subject}`,
+    text: [
+      `New contact form submission`,
+      '',
+      `Name: ${name}`,
+      `Email: ${email}`,
+      `Subject: ${subject}`,
+      '',
+      message,
+    ].join('\n'),
+    html: `
+      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #111827; max-width: 560px; margin: 0 auto; padding: 24px;">
+        <h2 style="margin: 0 0 16px;">New contact form submission</h2>
+        <p><strong>Name:</strong> ${escapeHtml(name)}</p>
+        <p><strong>Email:</strong> ${escapeHtml(email)}</p>
+        <p><strong>Subject:</strong> ${escapeHtml(subject)}</p>
+        <p style="white-space: pre-wrap; margin-top: 16px;">${escapeHtml(message)}</p>
+      </div>
+    `,
+    trackingSettings: {
+      clickTracking: { enable: false },
+      openTracking: { enable: false },
+    },
+  };
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function logContactSubmission(payload) {
+  console.log('\n--- Contact form submission ---');
+  console.log(`Name: ${payload.name}`);
+  console.log(`Email: ${payload.email}`);
+  console.log(`Subject: ${payload.subject}`);
+  console.log(`Message: ${payload.message}`);
+  console.log('------------------------------\n');
+}
+
+/**
+ * Deliver contact form mail via existing SendGrid setup.
+ * When SendGrid is not configured, logs the payload and resolves
+ * so local development can continue without failing the request.
+ */
+async function sendContactEmail(payload) {
+  logContactSubmission(payload);
+
+  if (!isSendGridConfigured()) {
+    console.warn(
+      'SendGrid is not configured — contact form logged only (set SENDGRID_API_KEY and EMAIL_FROM to email).'
+    );
+    return { delivered: false, logged: true };
+  }
+
+  sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+
+  try {
+    const [response] = await sgMail.send(buildContactEmail(payload));
+    const messageId = response?.headers?.['x-message-id'];
+    console.log(
+      `Contact form emailed${messageId ? ` (id: ${messageId})` : ''} from ${payload.email}`
+    );
+    return { delivered: true, logged: true };
+  } catch (err) {
+    const details = err.response?.body?.errors?.[0]?.message || err.message;
+    console.error('SendGrid contact error:', details);
+    if (err.response?.body) {
+      console.error('SendGrid details:', JSON.stringify(err.response.body, null, 2));
+    }
+    throw new Error('Failed to send contact message');
+  }
+}
+
+module.exports = {
+  sendPasswordResetOtpEmail,
+  sendContactEmail,
+  isSendGridConfigured,
+};

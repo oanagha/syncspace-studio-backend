@@ -39,6 +39,7 @@ const DEFAULTS = {
   bio: '',
   fullName: '',
   email: '',
+  avatarUrl: null,
   guestAccess: true,
   require2fa: false,
   publicTemplates: true,
@@ -103,6 +104,7 @@ function serializePreferences(pref, user, workspace) {
     jobTitle: user?.job_title || DEFAULTS.jobTitle,
     timezone: user?.timezone || DEFAULTS.timezone,
     bio: user?.bio || DEFAULTS.bio,
+    avatarUrl: user?.avatar_url || null,
     workspaceId: workspace?.id || null,
     workspaceName: workspace?.name || DEFAULTS.workspaceName,
     guestAccess: workspace?.guest_access ?? DEFAULTS.guestAccess,
@@ -113,12 +115,31 @@ function serializePreferences(pref, user, workspace) {
 
 async function loadUser(userId) {
   const result = await pool.query(
-    `SELECT id, full_name, workspace_email, job_title, timezone, bio, password_hash
+    `SELECT id, full_name, workspace_email, job_title, timezone, bio, avatar_url, password_hash
      FROM users
      WHERE id = $1`,
     [userId]
   );
   return result.rows[0] || null;
+}
+
+function serializeUser(user) {
+  if (!user) return null;
+  return {
+    id: user.id,
+    name: user.full_name,
+    email: user.workspace_email,
+    avatarUrl: user.avatar_url || null,
+  };
+}
+
+function publicPathToStorageKey(avatarUrl) {
+  if (!avatarUrl) return null;
+  const value = String(avatarUrl);
+  if (value.startsWith('/uploads/')) {
+    return value.slice('/uploads/'.length);
+  }
+  return value.replace(/^\/+/, '');
 }
 
 async function loadPreferences(userId) {
@@ -168,6 +189,7 @@ async function getPreferences(req, res) {
 
     return res.status(200).json({
       preferences: serializePreferences(await loadPreferences(req.user.id), user, workspace),
+      user: serializeUser(user),
     });
   } catch (err) {
     console.error('Get preferences error:', err);
@@ -289,7 +311,7 @@ async function updatePreferences(req, res) {
       if (!ok) {
         return res.status(400).json({ message: 'Current password is incorrect' });
       }
-      userPatch.password_hash = await bcrypt.hash(String(newPassword), 10);
+      userPatch.password_hash = await bcrypt.hash(String(newPassword), 12);
     }
 
     const workspaceFields = hasField(
@@ -474,6 +496,7 @@ async function updatePreferences(req, res) {
 
     return res.status(200).json({
       preferences: serializePreferences(await loadPreferences(req.user.id), nextUser, workspace),
+      user: serializeUser(nextUser),
     });
   } catch (err) {
     await client.query('ROLLBACK');
@@ -487,4 +510,108 @@ async function updatePreferences(req, res) {
   }
 }
 
-module.exports = { getPreferences, updatePreferences };
+async function uploadAvatar(req, res) {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: 'avatar file is required' });
+    }
+
+    const {
+      saveAvatarFile,
+      deleteStoredFile,
+      isAllowedAvatar,
+      getAvatarMaxBytes,
+    } = require('../services/storage.service');
+
+    if (!isAllowedAvatar(req.file)) {
+      return res.status(400).json({ message: 'Avatar must be a PNG, JPEG, or WebP image' });
+    }
+
+    if (req.file.size > getAvatarMaxBytes()) {
+      return res.status(400).json({ message: 'Avatar must be 2 MB or smaller' });
+    }
+
+    const user = await loadUser(req.user.id);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const saved = await saveAvatarFile({
+      buffer: req.file.buffer,
+      originalname: req.file.originalname,
+      mimetype: req.file.mimetype,
+      userId: req.user.id,
+    });
+
+    const previousKey = publicPathToStorageKey(user.avatar_url);
+
+    await pool.query(
+      `UPDATE users
+       SET avatar_url = $1, updated_at = NOW()
+       WHERE id = $2`,
+      [saved.public_path, req.user.id]
+    );
+
+    if (previousKey && previousKey !== saved.storage_key) {
+      try {
+        await deleteStoredFile(previousKey);
+      } catch (cleanupErr) {
+        console.error('Previous avatar cleanup failed:', cleanupErr);
+      }
+    }
+
+    const nextUser = await loadUser(req.user.id);
+    return res.status(200).json({
+      message: 'Avatar updated',
+      preferences: serializePreferences(await loadPreferences(req.user.id), nextUser, null),
+      user: serializeUser(nextUser),
+    });
+  } catch (err) {
+    console.error('Upload avatar error:', err);
+    return res.status(500).json({ message: 'Failed to upload avatar' });
+  }
+}
+
+async function removeAvatar(req, res) {
+  try {
+    const { deleteStoredFile } = require('../services/storage.service');
+    const user = await loadUser(req.user.id);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const previousKey = publicPathToStorageKey(user.avatar_url);
+
+    await pool.query(
+      `UPDATE users
+       SET avatar_url = NULL, updated_at = NOW()
+       WHERE id = $1`,
+      [req.user.id]
+    );
+
+    if (previousKey) {
+      try {
+        await deleteStoredFile(previousKey);
+      } catch (cleanupErr) {
+        console.error('Avatar file cleanup failed:', cleanupErr);
+      }
+    }
+
+    const nextUser = await loadUser(req.user.id);
+    return res.status(200).json({
+      message: 'Avatar removed',
+      preferences: serializePreferences(await loadPreferences(req.user.id), nextUser, null),
+      user: serializeUser(nextUser),
+    });
+  } catch (err) {
+    console.error('Remove avatar error:', err);
+    return res.status(500).json({ message: 'Failed to remove avatar' });
+  }
+}
+
+module.exports = {
+  getPreferences,
+  updatePreferences,
+  uploadAvatar,
+  removeAvatar,
+};

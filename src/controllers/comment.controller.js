@@ -39,7 +39,35 @@ async function loadTaskAccess(taskId, userId) {
     return { status: 403, message: "You don't have access to this project" };
   }
 
-  return { task };
+  return { task, membership };
+}
+
+function canManageComments(role) {
+  return role === 'Owner' || role === 'Admin';
+}
+
+function validateCommentContent(raw) {
+  const content = String(raw ?? '').trim();
+  if (!content) {
+    return { error: 'Comment cannot be empty' };
+  }
+  if (content.length > MAX_CONTENT_LEN) {
+    return {
+      error: `Comment must be at most ${MAX_CONTENT_LEN} characters`,
+    };
+  }
+  return { content };
+}
+
+async function loadCommentForTask(taskId, commentId) {
+  const result = await pool.query(
+    `SELECT c.id, c.task_id, c.body, c.user_id, c.created_at, u.full_name AS user_name
+     FROM task_comments c
+     INNER JOIN users u ON u.id = c.user_id
+     WHERE c.id = $1 AND c.task_id = $2`,
+    [commentId, taskId]
+  );
+  return result.rows[0] || null;
 }
 
 function extractMentionTokens(content) {
@@ -198,4 +226,102 @@ async function createComment(req, res) {
   }
 }
 
-module.exports = { listComments, createComment };
+async function updateComment(req, res) {
+  try {
+    const taskId = parseWorkspaceId(req.params.id);
+    const commentId = parseWorkspaceId(req.params.commentId);
+
+    if (!taskId) {
+      return res.status(404).json({ message: 'Task not found' });
+    }
+    if (!commentId) {
+      return res.status(404).json({ message: 'Comment not found' });
+    }
+
+    const { content, error } = validateCommentContent(
+      req.body?.content ?? req.body?.body
+    );
+    if (error) {
+      return res.status(400).json({ message: error });
+    }
+
+    const access = await loadTaskAccess(taskId, req.user.id);
+    if (access.status) {
+      return res.status(access.status).json({ message: access.message });
+    }
+
+    const existing = await loadCommentForTask(taskId, commentId);
+    if (!existing) {
+      return res.status(404).json({ message: 'Comment not found' });
+    }
+
+    if (existing.user_id !== req.user.id) {
+      return res.status(403).json({ message: 'Forbidden' });
+    }
+
+    const updated = await pool.query(
+      `UPDATE task_comments
+       SET body = $1
+       WHERE id = $2 AND task_id = $3
+       RETURNING id, task_id, body, user_id, created_at`,
+      [content, commentId, taskId]
+    );
+
+    return res.status(200).json({
+      comment: serializeComment({
+        ...updated.rows[0],
+        user_name: existing.user_name,
+      }),
+    });
+  } catch (err) {
+    console.error('Update comment error:', err);
+    return res.status(500).json({ message: 'Failed to update comment' });
+  }
+}
+
+async function deleteComment(req, res) {
+  try {
+    const taskId = parseWorkspaceId(req.params.id);
+    const commentId = parseWorkspaceId(req.params.commentId);
+
+    if (!taskId) {
+      return res.status(404).json({ message: 'Task not found' });
+    }
+    if (!commentId) {
+      return res.status(404).json({ message: 'Comment not found' });
+    }
+
+    const access = await loadTaskAccess(taskId, req.user.id);
+    if (access.status) {
+      return res.status(access.status).json({ message: access.message });
+    }
+
+    const existing = await loadCommentForTask(taskId, commentId);
+    if (!existing) {
+      return res.status(404).json({ message: 'Comment not found' });
+    }
+
+    const isAuthor = existing.user_id === req.user.id;
+    const isManager = canManageComments(access.membership?.role);
+    if (!isAuthor && !isManager) {
+      return res.status(403).json({ message: 'Forbidden' });
+    }
+
+    await pool.query(
+      `DELETE FROM task_comments WHERE id = $1 AND task_id = $2`,
+      [commentId, taskId]
+    );
+
+    return res.status(200).json({ message: 'Comment deleted', id: commentId });
+  } catch (err) {
+    console.error('Delete comment error:', err);
+    return res.status(500).json({ message: 'Failed to delete comment' });
+  }
+}
+
+module.exports = {
+  listComments,
+  createComment,
+  updateComment,
+  deleteComment,
+};

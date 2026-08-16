@@ -187,7 +187,7 @@ async function createTask(req, res) {
     }
 
     const column = String(
-      pickField(req.body, 'columnId', 'column_id', 'column') ?? 'Todo'
+      pickField(req.body, 'columnId', 'column_id', 'column', 'column_name', 'columnName') ?? 'Todo'
     ).trim();
     await ensureDefaultColumns(pool, projectId);
     if (!(await findProjectColumn(projectId, column))) {
@@ -399,9 +399,9 @@ async function updateTask(req, res) {
 
     let column = current.column_name;
     let sortOrder = current.sort_order ?? 0;
-    if (hasField(req.body, 'columnId', 'column_id', 'column')) {
+    if (hasField(req.body, 'columnId', 'column_id', 'column', 'column_name', 'columnName')) {
       column = String(
-        pickField(req.body, 'columnId', 'column_id', 'column') ?? ''
+        pickField(req.body, 'columnId', 'column_id', 'column', 'column_name', 'columnName') ?? ''
       ).trim();
       await ensureDefaultColumns(pool, current.project_id);
       if (!(await findProjectColumn(current.project_id, column))) {
@@ -642,7 +642,7 @@ async function updateTaskStatus(req, res) {
     }
 
     const column = String(
-      pickField(req.body, 'columnId', 'column_id', 'column') ?? ''
+      pickField(req.body, 'columnId', 'column_id', 'column', 'column_name', 'columnName') ?? ''
     ).trim();
     if (!column) {
       return res.status(400).json({ message: 'Valid target column is required' });
