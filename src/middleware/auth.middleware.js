@@ -11,7 +11,7 @@ function authMiddleware(req, res, next) {
   try {
     const payload = verifyToken(token);
 
-    if (payload.purpose === 'password_reset' || !payload.sub) {
+    if (payload.purpose === 'password_reset' || payload.purpose === '2fa_pending' || !payload.sub) {
       return res.status(401).json({ message: 'Unauthorized' });
     }
 

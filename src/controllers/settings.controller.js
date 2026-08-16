@@ -28,7 +28,7 @@ const DEFAULTS = {
   notifyDueDates: true,
   notifyFiles: false,
   notifyDigest: true,
-  twoFactor: true,
+  twoFactor: false,
   loginAlerts: true,
   slack: true,
   github: true,
@@ -93,7 +93,7 @@ function serializePreferences(pref, user, workspace) {
     notifyDueDates: row.notify_due_dates ?? DEFAULTS.notifyDueDates,
     notifyFiles: row.notify_files ?? DEFAULTS.notifyFiles,
     notifyDigest: row.notify_digest ?? DEFAULTS.notifyDigest,
-    twoFactor: row.two_factor ?? DEFAULTS.twoFactor,
+    twoFactor: Boolean(user?.totp_enabled),
     loginAlerts: row.login_alerts ?? DEFAULTS.loginAlerts,
     slack: row.slack ?? DEFAULTS.slack,
     github: row.github ?? DEFAULTS.github,
@@ -115,7 +115,8 @@ function serializePreferences(pref, user, workspace) {
 
 async function loadUser(userId) {
   const result = await pool.query(
-    `SELECT id, full_name, workspace_email, job_title, timezone, bio, avatar_url, password_hash
+    `SELECT id, full_name, workspace_email, job_title, timezone, bio, avatar_url,
+            password_hash, totp_enabled
      FROM users
      WHERE id = $1`,
     [userId]
@@ -246,7 +247,6 @@ async function updatePreferences(req, res) {
       setBool(['notifyDueDates', 'notify_due_dates'], 'notifyDueDates', 'notify_due_dates') ||
       setBool(['notifyFiles', 'notify_files'], 'notifyFiles', 'notify_files') ||
       setBool(['notifyDigest', 'notify_digest'], 'notifyDigest', 'notify_digest') ||
-      setBool(['twoFactor', 'two_factor'], 'twoFactor', 'two_factor') ||
       setBool(['loginAlerts', 'login_alerts'], 'loginAlerts', 'login_alerts') ||
       setBool(['slack'], 'slack', 'slack') ||
       setBool(['github'], 'github', 'github') ||
@@ -255,6 +255,9 @@ async function updatePreferences(req, res) {
     if (boolError) {
       return res.status(400).json({ message: boolError });
     }
+
+    // twoFactor is controlled by /api/auth/2fa/* — keep preference in sync with enrollment.
+    prefPatch.two_factor = Boolean(user.totp_enabled);
 
     if (hasField(body, 'fullName', 'full_name')) {
       const fullName = String(pick(body, 'fullName', 'full_name') ?? '').trim();

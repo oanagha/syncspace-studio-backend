@@ -85,13 +85,16 @@ async function sendPasswordResetOtpEmail({ to, otp }) {
   }
 }
 
+function contactInbox() {
+  return process.env.CONTACT_TO || process.env.EMAIL_FROM;
+}
+
 function buildContactEmail({ name, email, subject, message }) {
   const fromEmail = process.env.EMAIL_FROM;
   const appName = process.env.APP_NAME || 'SyncSpace';
-  const inbox = process.env.CONTACT_TO || fromEmail;
 
   return {
-    to: inbox,
+    to: contactInbox(),
     from: {
       email: fromEmail,
       name: `${appName} Contact`,
@@ -117,6 +120,46 @@ function buildContactEmail({ name, email, subject, message }) {
         <p><strong>Email:</strong> ${escapeHtml(email)}</p>
         <p><strong>Subject:</strong> ${escapeHtml(subject)}</p>
         <p style="white-space: pre-wrap; margin-top: 16px;">${escapeHtml(message)}</p>
+      </div>
+    `,
+    trackingSettings: {
+      clickTracking: { enable: false },
+      openTracking: { enable: false },
+    },
+  };
+}
+
+function buildContactConfirmationEmail({ name, email, subject, message }) {
+  const fromEmail = process.env.EMAIL_FROM;
+  const appName = process.env.APP_NAME || 'SyncSpace';
+
+  return {
+    to: email,
+    from: {
+      email: fromEmail,
+      name: appName,
+    },
+    replyTo: fromEmail,
+    subject: `We received your message — ${appName}`,
+    text: [
+      `Hi ${name},`,
+      '',
+      `Thanks for contacting ${appName}. We received your message and will get back to you shortly.`,
+      '',
+      `Subject: ${subject}`,
+      '',
+      message,
+      '',
+      `— The ${appName} team`,
+    ].join('\n'),
+    html: `
+      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #111827; max-width: 560px; margin: 0 auto; padding: 24px;">
+        <h2 style="margin: 0 0 16px;">We received your message</h2>
+        <p>Hi ${escapeHtml(name)},</p>
+        <p>Thanks for contacting <strong>${escapeHtml(appName)}</strong>. We received your message and will get back to you shortly.</p>
+        <p><strong>Subject:</strong> ${escapeHtml(subject)}</p>
+        <p style="white-space: pre-wrap; margin-top: 16px; padding: 16px; background: #f3f4f6; border-radius: 12px;">${escapeHtml(message)}</p>
+        <p style="font-size: 14px; color: #6b7280;">— The ${escapeHtml(appName)} team</p>
       </div>
     `,
     trackingSettings: {
@@ -160,14 +203,14 @@ async function sendContactEmail(payload) {
   }
 
   sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+  const inbox = contactInbox();
 
   try {
     const [response] = await sgMail.send(buildContactEmail(payload));
     const messageId = response?.headers?.['x-message-id'];
     console.log(
-      `Contact form emailed${messageId ? ` (id: ${messageId})` : ''} from ${payload.email}`
+      `Contact form emailed to ${inbox}${messageId ? ` (id: ${messageId})` : ''} from ${payload.email}`
     );
-    return { delivered: true, logged: true };
   } catch (err) {
     const details = err.response?.body?.errors?.[0]?.message || err.message;
     console.error('SendGrid contact error:', details);
@@ -176,6 +219,23 @@ async function sendContactEmail(payload) {
     }
     throw new Error('Failed to send contact message');
   }
+
+  const submitter = String(payload.email || '').toLowerCase();
+  const inboxNorm = String(inbox || '').toLowerCase();
+  if (submitter && submitter !== inboxNorm) {
+    try {
+      const [confirm] = await sgMail.send(buildContactConfirmationEmail(payload));
+      const confirmId = confirm?.headers?.['x-message-id'];
+      console.log(
+        `Contact confirmation emailed to ${payload.email}${confirmId ? ` (id: ${confirmId})` : ''}`
+      );
+    } catch (err) {
+      const details = err.response?.body?.errors?.[0]?.message || err.message;
+      console.error('SendGrid contact confirmation error:', details);
+    }
+  }
+
+  return { delivered: true, logged: true };
 }
 
 function logInvite({ to, workspaceName, role }) {
@@ -273,9 +333,83 @@ async function sendWorkspaceInviteEmail(payload) {
   }
 }
 
+function buildLoginAlertEmail({ to, name, ip, userAgent, when }) {
+  const fromEmail = process.env.EMAIL_FROM;
+  const appName = process.env.APP_NAME || 'SyncSpace';
+  const safeName = escapeHtml(name || 'there');
+  const safeIp = escapeHtml(ip || 'Unknown');
+  const safeUa = escapeHtml(userAgent || 'Unknown device');
+  const safeWhen = escapeHtml(when || new Date().toUTCString());
+
+  return {
+    to,
+    from: {
+      email: fromEmail,
+      name: appName,
+    },
+    replyTo: fromEmail,
+    subject: `New sign-in to your ${appName} account`,
+    text: [
+      `Hi ${name || 'there'},`,
+      '',
+      `We noticed a sign-in to your ${appName} account from a new device or location.`,
+      '',
+      `When: ${when}`,
+      `IP: ${ip || 'Unknown'}`,
+      `Device: ${userAgent || 'Unknown device'}`,
+      '',
+      'If this was you, you can ignore this email.',
+      'If you did not sign in, reset your password and disable any compromised sessions.',
+    ].join('\n'),
+    html: `
+      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #111827; max-width: 560px; margin: 0 auto; padding: 24px;">
+        <h2 style="margin: 0 0 16px;">New sign-in detected</h2>
+        <p>Hi ${safeName},</p>
+        <p>We noticed a sign-in to your <strong>${escapeHtml(appName)}</strong> account from a new device or location.</p>
+        <ul style="font-size: 14px; color: #374151; padding-left: 18px;">
+          <li><strong>When:</strong> ${safeWhen}</li>
+          <li><strong>IP:</strong> ${safeIp}</li>
+          <li><strong>Device:</strong> ${safeUa}</li>
+        </ul>
+        <p style="font-size: 14px; color: #6b7280;">If this was you, no action is needed. If it wasn’t, reset your password right away.</p>
+      </div>
+    `,
+    trackingSettings: {
+      clickTracking: { enable: false },
+      openTracking: { enable: false },
+    },
+  };
+}
+
+async function sendLoginAlertEmail(payload) {
+  if (!isSendGridConfigured()) {
+    console.warn(
+      `Login alert for ${payload.to} (SendGrid not configured): ${payload.ip || 'unknown IP'}`
+    );
+    return { delivered: false, logged: true };
+  }
+
+  sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+
+  try {
+    const [response] = await sgMail.send(buildLoginAlertEmail(payload));
+    const messageId = response?.headers?.['x-message-id'];
+    console.log(
+      `Login alert emailed to ${payload.to}${messageId ? ` (id: ${messageId})` : ''}`
+    );
+    return { delivered: true, logged: true };
+  } catch (err) {
+    const details = err.response?.body?.errors?.[0]?.message || err.message;
+    console.error('SendGrid login alert error:', details);
+    // Don't fail the login if email delivery fails.
+    return { delivered: false, logged: true, error: details };
+  }
+}
+
 module.exports = {
   sendPasswordResetOtpEmail,
   sendContactEmail,
   sendWorkspaceInviteEmail,
+  sendLoginAlertEmail,
   isSendGridConfigured,
 };
