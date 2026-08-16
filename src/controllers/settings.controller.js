@@ -22,7 +22,7 @@ const DEFAULTS = {
   sidebar: 'expanded',
   density: 'comfortable',
   accent: 'ocean',
-  reduceMotion: false,
+  reduceMotion: true,
   notifyMentions: true,
   notifyAssignments: true,
   notifyDueDates: true,
