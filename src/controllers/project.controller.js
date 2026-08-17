@@ -3,6 +3,7 @@ const {
   parseWorkspaceId,
   getWorkspaceMembership,
 } = require('../middleware/workspace.middleware');
+const { canEditContent, guestEditMessage } = require('../utils/roles');
 const { ensureDefaultColumns } = require('./column.controller');
 
 const MIN_TITLE_LEN = 3;
@@ -188,6 +189,10 @@ async function createProject(req, res) {
       req.body?.description === undefined || req.body?.description === null
         ? null
         : String(req.body.description).trim() || null;
+
+    if (!canEditContent(req.workspace.role)) {
+      return res.status(403).json({ message: guestEditMessage() });
+    }
 
     await client.query('BEGIN');
 

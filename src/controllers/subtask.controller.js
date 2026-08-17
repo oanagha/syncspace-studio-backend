@@ -3,6 +3,7 @@ const {
   parseWorkspaceId,
   getWorkspaceMembership,
 } = require('../middleware/workspace.middleware');
+const { canEditContent, guestEditMessage } = require('../utils/roles');
 
 const MIN_TITLE_LEN = 1;
 const MAX_TITLE_LEN = 200;
@@ -18,7 +19,7 @@ function serializeSubtask(row) {
   };
 }
 
-async function loadTaskAccess(taskId, userId) {
+async function loadTaskAccess(taskId, userId, { write = false } = {}) {
   const result = await pool.query(
     `SELECT t.id, t.project_id, p.workspace_id
      FROM tasks t
@@ -35,6 +36,10 @@ async function loadTaskAccess(taskId, userId) {
   const membership = await getWorkspaceMembership(task.workspace_id, userId);
   if (!membership) {
     return { status: 403, message: "You don't have access to this project" };
+  }
+
+  if (write && !canEditContent(membership.role)) {
+    return { status: 403, message: guestEditMessage() };
   }
 
   return { task };
@@ -102,7 +107,7 @@ async function createSubtask(req, res) {
       });
     }
 
-    const access = await loadTaskAccess(taskId, req.user.id);
+    const access = await loadTaskAccess(taskId, req.user.id, { write: true });
     if (access.status) {
       return res.status(access.status).json({ message: access.message });
     }
@@ -161,7 +166,7 @@ async function updateSubtask(req, res) {
       return res.status(400).json({ message: 'Provide completed or title' });
     }
 
-    const access = await loadTaskAccess(taskId, req.user.id);
+    const access = await loadTaskAccess(taskId, req.user.id, { write: true });
     if (access.status) {
       return res.status(access.status).json({ message: access.message });
     }
@@ -221,7 +226,7 @@ async function deleteSubtask(req, res) {
       return res.status(404).json({ message: 'Subtask not found' });
     }
 
-    const access = await loadTaskAccess(taskId, req.user.id);
+    const access = await loadTaskAccess(taskId, req.user.id, { write: true });
     if (access.status) {
       return res.status(access.status).json({ message: access.message });
     }

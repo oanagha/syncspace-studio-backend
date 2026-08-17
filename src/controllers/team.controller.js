@@ -7,9 +7,9 @@ const { sendWorkspaceInviteEmail } = require('../utils/mail');
 const { getFrontendUrl } = require('../config/env');
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const INVITE_ROLES = new Set(['Admin', 'Member']);
-const MEMBER_ROLES = new Set(['Owner', 'Admin', 'Member']);
-const ASSIGNABLE_ROLES = new Set(['Admin', 'Member']);
+const INVITE_ROLES = new Set(['Admin', 'Member', 'Guest']);
+const MEMBER_ROLES = new Set(['Owner', 'Admin', 'Member', 'Guest']);
+const ASSIGNABLE_ROLES = new Set(['Admin', 'Member', 'Guest']);
 
 function serializeInvitation(row) {
   return {
@@ -62,7 +62,16 @@ function parseUserId(value) {
 
 function membershipRoleToInsert(inviteRole) {
   if (inviteRole === 'Admin') return 'Admin';
+  if (inviteRole === 'Guest') return 'Guest';
   return 'Member';
+}
+
+async function workspaceAllowsGuests(workspaceId) {
+  const result = await pool.query(
+    `SELECT guest_access FROM workspaces WHERE id = $1`,
+    [workspaceId]
+  );
+  return Boolean(result.rows[0]?.guest_access);
 }
 
 async function getUserEmail(userId) {
@@ -130,7 +139,13 @@ async function inviteMember(req, res) {
 
     if (!INVITE_ROLES.has(role)) {
       return res.status(400).json({
-        message: 'role must be Admin or Member (Guest invites are not supported yet)',
+        message: 'role must be Admin, Member, or Guest',
+      });
+    }
+
+    if (role === 'Guest' && !(await workspaceAllowsGuests(workspaceId))) {
+      return res.status(403).json({
+        message: 'Guest client access is turned off for this workspace',
       });
     }
 
@@ -366,7 +381,7 @@ async function updateMemberRole(req, res) {
     }
 
     if (!MEMBER_ROLES.has(role)) {
-      return res.status(400).json({ message: 'role must be Owner, Admin, or Member' });
+      return res.status(400).json({ message: 'role must be Owner, Admin, Member, or Guest' });
     }
 
     if (!ASSIGNABLE_ROLES.has(role)) {
@@ -405,6 +420,12 @@ async function updateMemberRole(req, res) {
 
     if (actor.role === 'Admin' && role === 'Admin') {
       return res.status(403).json({ message: 'Only the owner can promote members to admin' });
+    }
+
+    if (role === 'Guest' && !(await workspaceAllowsGuests(workspaceId))) {
+      return res.status(403).json({
+        message: 'Guest client access is turned off for this workspace',
+      });
     }
 
     await pool.query(
@@ -520,6 +541,13 @@ async function acceptInvitation(req, res) {
     if (invite.status !== 'pending') {
       await client.query('ROLLBACK');
       return res.status(400).json({ message: 'Invitation is no longer pending' });
+    }
+
+    if (invite.role === 'Guest' && !(await workspaceAllowsGuests(invite.workspace_id))) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({
+        message: 'Guest client access is turned off for this workspace',
+      });
     }
 
     const memberRole = membershipRoleToInsert(invite.role);

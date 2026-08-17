@@ -3,6 +3,7 @@ const {
   parseWorkspaceId,
   getWorkspaceMembership,
 } = require('../middleware/workspace.middleware');
+const { canEditContent, guestEditMessage } = require('../utils/roles');
 
 const MIN_TITLE_LEN = 3;
 const MAX_TITLE_LEN = 200;
@@ -71,7 +72,7 @@ function serializeTask(row) {
   };
 }
 
-async function assertProjectAccess(projectId, userId) {
+async function assertProjectAccess(projectId, userId, { write = false } = {}) {
   const result = await pool.query(
     `SELECT id, workspace_id FROM projects WHERE id = $1`,
     [projectId]
@@ -84,6 +85,10 @@ async function assertProjectAccess(projectId, userId) {
   const membership = await getWorkspaceMembership(result.rows[0].workspace_id, userId);
   if (!membership) {
     return { status: 403, message: "You don't have access to this project" };
+  }
+
+  if (write && !canEditContent(membership.role)) {
+    return { status: 403, message: guestEditMessage() };
   }
 
   return { project: result.rows[0], membership };
@@ -176,7 +181,7 @@ async function createTask(req, res) {
       return res.status(400).json({ message: 'projectId is required' });
     }
 
-    const access = await assertProjectAccess(projectId, req.user.id);
+    const access = await assertProjectAccess(projectId, req.user.id, { write: true });
     if (access.status) {
       return res.status(access.status).json({ message: access.message });
     }
@@ -383,7 +388,7 @@ async function updateTask(req, res) {
     }
 
     const current = existing.rows[0];
-    const access = await assertProjectAccess(current.project_id, req.user.id);
+    const access = await assertProjectAccess(current.project_id, req.user.id, { write: true });
     if (access.status) {
       return res.status(access.status).json({ message: access.message });
     }
@@ -497,7 +502,7 @@ async function assignTask(req, res) {
       return res.status(404).json({ message: 'Task not found' });
     }
 
-    const access = await assertProjectAccess(existing.rows[0].project_id, req.user.id);
+    const access = await assertProjectAccess(existing.rows[0].project_id, req.user.id, { write: true });
     if (access.status) {
       return res.status(access.status).json({ message: access.message });
     }
@@ -550,7 +555,7 @@ async function loadTaskForUpdate(taskId, userId) {
     return { status: 404, message: 'Task not found' };
   }
 
-  const access = await assertProjectAccess(existing.rows[0].project_id, userId);
+  const access = await assertProjectAccess(existing.rows[0].project_id, userId, { write: true });
   if (access.status) {
     return access;
   }
@@ -673,7 +678,7 @@ async function updateTaskStatus(req, res) {
     }
 
     const current = existing.rows[0];
-    const access = await assertProjectAccess(current.project_id, req.user.id);
+    const access = await assertProjectAccess(current.project_id, req.user.id, { write: true });
     if (access.status) {
       await client.query('ROLLBACK');
       return res.status(access.status).json({ message: access.message });
@@ -807,7 +812,7 @@ async function deleteTask(req, res) {
     }
 
     const current = existing.rows[0];
-    const access = await assertProjectAccess(current.project_id, req.user.id);
+    const access = await assertProjectAccess(current.project_id, req.user.id, { write: true });
     if (access.status) {
       await client.query('ROLLBACK');
       return res.status(access.status).json({ message: access.message });

@@ -482,6 +482,20 @@ async function disable2fa(req, res) {
       }
     }
 
+    const required = await pool.query(
+      `SELECT w.name
+       FROM workspaces w
+       INNER JOIN workspace_members wm ON wm.workspace_id = w.id
+       WHERE wm.user_id = $1 AND w.require_2fa IS TRUE
+       LIMIT 1`,
+      [user.id]
+    );
+    if (required.rows.length) {
+      return res.status(403).json({
+        message: `“${required.rows[0].name}” requires two-factor authentication. Turn that workspace setting off first.`,
+      });
+    }
+
     await pool.query(
       `UPDATE users
        SET totp_secret = NULL,

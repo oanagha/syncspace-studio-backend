@@ -3,6 +3,7 @@ const {
   parseWorkspaceId,
   getWorkspaceMembership,
 } = require('../middleware/workspace.middleware');
+const { canEditContent, guestEditMessage } = require('../utils/roles');
 const {
   saveFile,
   deleteStoredFile,
@@ -207,6 +208,10 @@ async function uploadFile(req, res) {
     const membership = await getWorkspaceMembership(workspaceId, req.user.id);
     if (!membership) {
       return res.status(403).json({ message: 'You do not have access to this workspace' });
+    }
+
+    if (!canEditContent(membership.role)) {
+      return res.status(403).json({ message: guestEditMessage() });
     }
 
     if (!isAllowedFile(req.file)) {
