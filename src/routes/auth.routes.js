@@ -10,6 +10,8 @@ const {
   forgotPassword,
   verifyOtp,
   resetPassword,
+  listSessions,
+  revokeUserSession,
 } = require('../controllers/auth.controller');
 const { authMiddleware } = require('../middleware/auth.middleware');
 
@@ -25,5 +27,7 @@ router.post('/2fa/disable', authMiddleware, disable2fa);
 router.post('/forgot-password', forgotPassword);
 router.post('/verify-otp', verifyOtp);
 router.post('/reset-password', resetPassword);
+router.get('/sessions', authMiddleware, listSessions);
+router.delete('/sessions/:id', authMiddleware, revokeUserSession);
 
 module.exports = router;

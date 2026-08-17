@@ -1,6 +1,7 @@
 const { verifyToken } = require('../utils/jwt');
+const { getActiveSession, touchSession } = require('../utils/sessions');
 
-function authMiddleware(req, res, next) {
+async function authMiddleware(req, res, next) {
   const header = req.headers.authorization || '';
   const [scheme, token] = header.split(' ');
 
@@ -15,14 +16,26 @@ function authMiddleware(req, res, next) {
       return res.status(401).json({ message: 'Unauthorized' });
     }
 
-    req.user = {
-      id: Number(payload.sub),
-      email: payload.email || payload.workspace_email || null,
-    };
-
-    if (!Number.isInteger(req.user.id) || req.user.id <= 0) {
+    const userId = Number(payload.sub);
+    if (!Number.isInteger(userId) || userId <= 0) {
       return res.status(401).json({ message: 'Unauthorized' });
     }
+
+    let sessionId = typeof payload.jti === 'string' && payload.jti ? payload.jti : null;
+    if (sessionId) {
+      const session = await getActiveSession(sessionId, userId);
+      if (!session) {
+        return res.status(401).json({ message: 'Session expired. Please sign in again.' });
+      }
+      sessionId = session.id;
+      touchSession(sessionId).catch(() => undefined);
+    }
+
+    req.user = {
+      id: userId,
+      email: payload.email || payload.workspace_email || null,
+      sessionId,
+    };
 
     return next();
   } catch {

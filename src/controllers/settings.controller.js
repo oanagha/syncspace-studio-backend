@@ -4,6 +4,7 @@ const {
   parseWorkspaceId,
   getWorkspaceMembership,
 } = require('../middleware/workspace.middleware');
+const { revokeOtherSessions } = require('../utils/sessions');
 
 const THEMES = new Set(['light', 'dark', 'system']);
 const LANGUAGES = new Set(['en', 'es', 'fr', 'de', 'pt']);
@@ -317,6 +318,8 @@ async function updatePreferences(req, res) {
       userPatch.password_hash = await bcrypt.hash(String(newPassword), 12);
     }
 
+    const passwordChanged = Boolean(userPatch.password_hash);
+
     const workspaceFields = hasField(
       body,
       'workspaceName',
@@ -489,6 +492,10 @@ async function updatePreferences(req, res) {
     }
 
     await client.query('COMMIT');
+
+    if (passwordChanged) {
+      await revokeOtherSessions(req.user.id, req.user.sessionId || null);
+    }
 
     const nextUser = await loadUser(req.user.id);
     let workspace = null;

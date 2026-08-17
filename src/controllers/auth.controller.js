@@ -5,6 +5,13 @@ const { signToken, verifyToken } = require('../utils/jwt');
 const { generateOtp, hashOtp } = require('../utils/otp');
 const { sendPasswordResetOtpEmail, sendLoginAlertEmail } = require('../utils/mail');
 const { generateSecret, verifyTotp, buildOtpAuthUrl } = require('../utils/totp');
+const {
+  createSession,
+  serializeSession,
+  listActiveSessions,
+  revokeSession,
+  revokeAllSessions,
+} = require('../utils/sessions');
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MIN_PASSWORD_LEN = 6;
@@ -96,10 +103,16 @@ async function maybeSendLoginAlert(req, user) {
   }
 }
 
-function issueSessionToken(user) {
+async function issueSessionToken(user, req) {
+  const session = await createSession({
+    userId: user.id,
+    userAgent: req?.headers?.['user-agent'] || null,
+    ip: clientIp(req),
+  });
   return signToken({
     sub: user.id,
     email: user.workspace_email,
+    jti: session.id,
   });
 }
 
@@ -198,10 +211,7 @@ async function register(req, res) {
 
     await client.query('COMMIT');
 
-    const token = signToken({
-      sub: user.id,
-      workspace_email: user.workspace_email,
-    });
+    const token = await issueSessionToken(user, req);
 
     return res.status(201).json({
       message: 'Workspace account created successfully',
@@ -277,7 +287,7 @@ async function login(req, res) {
       });
     }
 
-    const token = issueSessionToken(user);
+    const token = await issueSessionToken(user, req);
     await maybeSendLoginAlert(req, user);
 
     return res.status(200).json({
@@ -336,7 +346,7 @@ async function verify2fa(req, res) {
       return res.status(401).json({ message: 'Invalid authentication code' });
     }
 
-    const token = issueSessionToken(user);
+    const token = await issueSessionToken(user, req);
     await maybeSendLoginAlert(req, user);
 
     return res.status(200).json({
@@ -746,6 +756,8 @@ async function resetPassword(req, res) {
 
     await client.query('COMMIT');
 
+    await revokeAllSessions(otpRecord.user_id);
+
     return res.status(200).json({
       message: 'Password reset successfully. You can now sign in with your new password.',
     });
@@ -755,6 +767,41 @@ async function resetPassword(req, res) {
     return res.status(500).json({ message: 'Failed to reset password' });
   } finally {
     client.release();
+  }
+}
+
+async function listSessions(req, res) {
+  try {
+    const rows = await listActiveSessions(req.user.id);
+    return res.status(200).json({
+      sessions: rows.map((row) => serializeSession(row, req.user.sessionId)),
+    });
+  } catch (err) {
+    console.error('List sessions error:', err);
+    return res.status(500).json({ message: 'Failed to load sessions' });
+  }
+}
+
+async function revokeUserSession(req, res) {
+  try {
+    const sessionId = String(req.params.id || '').trim();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(sessionId)) {
+      return res.status(400).json({ message: 'Session id is required' });
+    }
+
+    const revoked = await revokeSession(sessionId, req.user.id);
+    if (!revoked) {
+      return res.status(404).json({ message: 'Session not found' });
+    }
+
+    const current = Boolean(req.user.sessionId && revoked.id === req.user.sessionId);
+    return res.status(200).json({
+      message: current ? 'Signed out of this browser' : 'Session revoked',
+      current,
+    });
+  } catch (err) {
+    console.error('Revoke session error:', err);
+    return res.status(500).json({ message: 'Failed to revoke session' });
   }
 }
 
@@ -769,4 +816,6 @@ module.exports = {
   forgotPassword,
   verifyOtp,
   resetPassword,
+  listSessions,
+  revokeUserSession,
 };
