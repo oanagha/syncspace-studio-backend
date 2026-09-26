@@ -1,5 +1,9 @@
 function getFrontendUrl() {
-  return process.env.FRONTEND_URL || 'http://localhost:5173';
+  const url = process.env.FRONTEND_URL;
+  if (!url || url.includes('syncspace-studio-64-m0els5mac-anagghhaaas-projects.vercel.app')) {
+    return 'https://syncspace-studio-64.vercel.app';
+  }
+  return url;
 }
 
 function isProduction() {

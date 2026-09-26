@@ -4,16 +4,26 @@ const fs = require('fs');
 const path = require('path');
 const { Pool } = require('pg');
 
-const useSsl = process.env.DB_HOST && process.env.DB_HOST !== 'localhost';
+const connectionString = process.env.DATABASE_URL;
+const useSsl =
+  (process.env.DB_HOST && process.env.DB_HOST !== 'localhost') ||
+  (connectionString && !connectionString.includes('localhost'));
 
-const pool = new Pool({
-  host: process.env.DB_HOST,
-  port: process.env.DB_PORT,
-  database: process.env.DB_NAME,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  ssl: useSsl ? { rejectUnauthorized: false } : false,
-});
+const poolConfig = connectionString
+  ? {
+      connectionString,
+      ssl: useSsl ? { rejectUnauthorized: false } : false,
+    }
+  : {
+      host: process.env.DB_HOST,
+      port: process.env.DB_PORT,
+      database: process.env.DB_NAME,
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+      ssl: useSsl ? { rejectUnauthorized: false } : false,
+    };
+
+const pool = new Pool(poolConfig);
 
 async function tableExists(name) {
   const { rows } = await pool.query(

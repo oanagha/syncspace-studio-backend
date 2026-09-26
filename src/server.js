@@ -23,6 +23,7 @@ const app = express();
 
 const allowedOrigins = [
   getFrontendUrl(),
+  'http://syncspace-studio-64.vercel.app',
   'https://syncspace-studio-64.vercel.app',
   'http://localhost:8080',
   'http://127.0.0.1:8080',
